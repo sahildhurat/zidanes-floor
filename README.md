@@ -10,8 +10,8 @@ squads, head-to-heads and ownership.
 | Part | Where it lives | Updates |
 |---|---|---|
 | Page | `site/index.html` (+ `site/backend.js`, `site/config.js`) | when this repo changes |
-| FPL data (squads, points, fixtures, prices) | `site/data/fpl.json`, built by `scripts/sync.mjs` + `scripts/build.py` | automatically every 3 hours (GitHub Actions), or *Actions → Sync FPL data and publish → Run workflow* |
-| Solio expected points | a scheduled Claude task reads Solio's Projections table in Sahil's signed-in browser (`tools/solio-reader.js`) and sends it to the Sheet; the sync matches it to FPL players into `raw/xp_solio.json` | every 3 hours while that computer is on; FPL's own estimate fills in for any gameweek Solio doesn't cover |
+| FPL data (squads, points, fixtures, prices) | `site/data/fpl.json`, built by `scripts/sync.mjs` + `scripts/build.py` | automatically every hour (GitHub Actions), or *Actions → Sync FPL data and publish → Run workflow* |
+| Solio expected points | a scheduled Claude task reads Solio's Projections table in Sahil's signed-in browser (`tools/solio-reader.js`) and sends it to the Sheet; the sync matches it to FPL players into `raw/xp_solio.json` | every 3 hours while that computer is on (Claude scheduled task), published within the hour; FPL's own estimate fills in for any gameweek Solio doesn't cover |
 | Saved lineups, member-list changes, votes | the club Google Sheet (`apps-script/Code.gs`, deployed as a web app) | live |
 | Screenshot reading | the same web app, calling Google's Gemini API (free tier) with the key stored in the Sheet's script properties | live, capped per day |
 

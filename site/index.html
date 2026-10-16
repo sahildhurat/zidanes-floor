@@ -1621,7 +1621,7 @@ function rosterHTML() {
   const pend = r.draft.pending.filter(id => !ALL.some(m => m.id === +id)).map(id => `<div class="idrow"><div class="who"><b>Waiting for sync</b><span><code>ID ${esc(id)}</code></span></div><span></span>${S.canWrite ? `<button class="btn" data-action="droppending" data-id="${esc(id)}">Remove</button>` : '<span></span>'}</div>`).join('');
   const dirty = JSON.stringify(r.draft) !== JSON.stringify({ pending: (S.edits.pending || []).map(String), hidden: (S.edits.hidden || []).map(Number) });
   return `<div class="sh-top"><div><div class="eyebrow">Club members</div><h2 class="sh-title" id="sh-title">FPL IDs</h2>
-      <div class="sh-sub"><span>${OPEN ? 'Each squad is pulled from FPL using these IDs. New IDs show up at the next automatic update (every 3 hours).' : 'Claude pulls each squad from FPL using these IDs. New IDs show up after the next sync.'}</span></div></div>
+      <div class="sh-sub"><span>${OPEN ? 'Each squad is pulled from FPL using these IDs. New IDs show up at the next automatic update (within the hour).' : 'Claude pulls each squad from FPL using these IDs. New IDs show up after the next sync.'}</span></div></div>
       <button class="xbtn" data-action="close" aria-label="Close">×</button></div>
     ${S.canWrite ? `<form class="formrow" data-form="addid" style="grid-template-columns:minmax(0,1fr) auto;align-items:end">
       <div><label class="lbl" for="newid">Add an FPL ID</label><span class="field"><input id="newid" inputmode="numeric" pattern="[0-9]*" maxlength="9" placeholder="Number from fantasy.premierleague.com/entry/…" autocomplete="off"></span></div>
