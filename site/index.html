@@ -920,7 +920,7 @@ function renderLineups() {
   if (!M.length) return emptyClub();
   if (!META.next) return '<div class="empty-state">There’s no upcoming gameweek: the season is over.</div>';
   const plans = M.filter(planOf).length, cd = countdown(META.deadline);
-  const how = !S.canWrite ? 'This view is read-only.' : S.canRead ? 'Upload a team screenshot on any card and Claude fills in that squad for you to check and save.' : 'Use Edit lineup to enter changes.';
+  const how = !S.canWrite ? 'This view is read-only.' : S.canRead ? `Upload a team screenshot on any card and ${OPEN ? 'it’s read automatically' : 'Claude fills in that squad'} for you to check and save.` : 'Use Edit lineup to enter changes.';
   const scale = [1, 2, 3, 4, 5].map(n => `<span class="fx fdr${n}">${n}</span>`).join('');
   const R = luRoster();
   return `<div class="viewhead"><div><h2>GW${META.next} lineups</h2><p>Deadline ${esc(fmtWhen(META.deadline))}${cd ? ` (in ${cd})` : ''}. ${plans} of ${M.length} lineups entered and shown exactly as entered. The rest show the best XI and captain from their GW${META.gw} squad by ${esc(XPMETA ? XPMETA.source : 'expected')} points. ${how}</p></div>
@@ -1094,7 +1094,7 @@ function resolveRead(m, r) {
   let c = pickIn(r.captain, st), vc = pickIn(r.vice, st);
   if (!c) { c = st.includes(base.c) ? base.c : bestXI()[0]; notes.push(`Captain wasn’t clear, so it’s set to ${P.get(c).name}. Check the armband.`); }
   if (!vc || vc === c) vc = st.includes(base.vc) && base.vc !== c ? base.vc : bestXI().find(id => id !== c);
-  if (Array.isArray(r.unsure)) r.unsure.slice(0, 4).forEach(u => { if (u) notes.push(`Claude wasn’t sure about “${String(u).slice(0, 30)}”`); });
+  if (Array.isArray(r.unsure)) r.unsure.slice(0, 4).forEach(u => { if (u) notes.push(`${OPEN ? 'Not sure' : 'Claude wasn’t sure'} about “${String(u).slice(0, 30)}”`); });
   const ids = [...st, ...bn];
   return { edit: { ids, c, vc, chip: ['wildcard', 'freehit', 'bboost', '3xc'].includes(r.chip) ? r.chip : '', note: 'From screenshot', orig: baseSet, src: 'screenshot',
     read: { ins: ids.filter(id => !baseSet.has(id)), outs: base.ids.filter(id => !ids.includes(id)), notes } } };
@@ -1110,7 +1110,7 @@ async function readShot(id, file) {
   try {
     const imgs = await prepImages(file);
     if (!imgs) throw { code: 'image_rejected' };
-    S.reading.phase = 'Claude is reading the team. This usually takes 20–60 seconds.'; refreshReading();
+    S.reading.phase = OPEN ? 'Reading the team from your screenshot. This usually takes 10–40 seconds.' : 'Claude is reading the team. This usually takes 20–60 seconds.'; refreshReading();
     const res = await S.sample.json(buildShotPrompt(m, imgs.desc), { images: imgs.blobs, signal: ctl.signal, modelTier: 'default' });
     const out = resolveRead(m, res);
     S.reading = null; refreshReading();
@@ -1123,7 +1123,7 @@ async function readShot(id, file) {
     S.reading = null; refreshReading();
     const c = e && e.code;
     if (c === 'cancelled') return;
-    if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(c)) { S.canRead = false; render(); toast('Claude can’t read images in this view, so screenshot upload is off. Use Edit lineup instead.'); return; }
+    if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(c)) { S.canRead = false; render(); toast(OPEN ? 'Screenshot reading isn’t switched on yet. Use Edit squad instead.' : 'Claude can’t read images in this view, so screenshot upload is off. Use Edit lineup instead.'); return; }
     if (c === 'bad_code') { toast('That club code didn’t work. Ask in the group for the right one.'); return; }
     if (c === 'bad_key') { toast('Screenshot reading isn’t set up right now. Use Edit squad instead.'); return; }
     toast(c === 'image_rejected' ? 'That image couldn’t be used. Try a PNG or JPG screenshot under 20 MB.'

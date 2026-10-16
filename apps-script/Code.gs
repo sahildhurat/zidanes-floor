@@ -1,43 +1,41 @@
 /**
  * Murder on Zidane's Floor — club backend for the GitHub Pages site.
  *
- * Lives in a Google Sheet you own (Extensions → Apps Script) and is deployed as a web app.
- * It stores the club's GW lineups, member-list changes and votes in this spreadsheet,
- * and reads FPL team screenshots with Claude using your Anthropic API key.
+ * Lives in a Google Sheet you own (Extensions → Apps Script) and is deployed as a web app that
+ * anyone with the link can use. It keeps the club's GW lineups, member-list changes and votes in
+ * this spreadsheet, stores the latest Solio projections, and reads FPL team screenshots with
+ * Google's Gemini API (free tier).
  *
  * Script properties (Project Settings → Script properties):
- *   CLUB_CODE          code the boys type once per device before they can save, vote or upload (recommended)
- *   ANTHROPIC_API_KEY  your key from console.anthropic.com (needed only for screenshot reading)
- *   MODEL              optional, defaults to claude-sonnet-5-5
- *   READ_LIMIT         optional, screenshot reads allowed per day (default 60)
+ *   GEMINI_API_KEY  free key from aistudio.google.com → Get API key (needed only for screenshot reading)
+ *   GEMINI_MODEL    optional; defaults to trying gemini-flash-latest, then gemini-2.5-flash, then gemini-flash-lite-latest
+ *   READ_LIMIT      optional, screenshot reads allowed per day (default 100)
  */
 
-const DEFAULT_MODEL = 'claude-sonnet-5-5';
+const MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest'];
 const TABS = {
   plans: ['manager_id', 'lineup_json', 'updated'],
   roster: ['key', 'value_json', 'updated'],
-  votes: ['vote_id', 'gameweek', 'voter', 'goalkeeper', 'strikers', 'bench', 'submitted', 'vote_json']
+  votes: ['vote_id', 'gameweek', 'voter', 'goalkeeper', 'strikers', 'bench', 'submitted', 'vote_json'],
+  solio: ['name', 'team', 'price']
 };
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
-  if (p.action === 'ping') {
-    return out({ ok: true, codeRequired: !!prop_('CLUB_CODE'), canRead: !!prop_('ANTHROPIC_API_KEY'), readsLeft: readsLeft_() });
-  }
+  if (p.action === 'ping') return out({ ok: true, canRead: !!prop_('GEMINI_API_KEY'), readsLeft: readsLeft_() });
+  if (p.action === 'solio') return out(Object.assign({ ok: true }, solio_()));
   return out(Object.assign({ ok: true }, state_()));
 }
 
 function doPost(e) {
   let body;
   try { body = JSON.parse(e.postData.contents); } catch (err) { return out({ ok: false, code: 'bad_request' }); }
-  const code = prop_('CLUB_CODE');
-  if (code && norm_(body.code) !== norm_(code)) return out({ ok: false, code: 'bad_code' });
   try {
     switch (body.action) {
-      case 'check': return out({ ok: true, canRead: !!prop_('ANTHROPIC_API_KEY'), readsLeft: readsLeft_() });
       case 'patch': return out(patch_(body));
       case 'vote': return out(vote_(body));
       case 'read': return out(readShot_(body));
+      case 'solio': return out(saveSolio_(body));
       default: return out({ ok: false, code: 'bad_request' });
     }
   } catch (err) {
@@ -45,7 +43,7 @@ function doPost(e) {
   }
 }
 
-/* ---------- state ---------- */
+/* ---------- lineups, member list, votes ---------- */
 
 function state_() {
   const plans = {};
@@ -99,10 +97,39 @@ function vote_(body) {
   return Object.assign({ ok: true }, state_());
 }
 
-/* ---------- screenshot reading ---------- */
+/* ---------- Solio projections (sent by the scheduled reader, read by the GitHub sync) ---------- */
+
+function saveSolio_(body) {
+  const d = body.data || {};
+  const gws = Array.isArray(d.gws) ? d.gws.map(Number).filter(g => g > 0 && g < 60).slice(0, 10) : [];
+  const rows = Array.isArray(d.rows) ? d.rows : [];
+  if (!gws.length || rows.length < 100 || rows.length > 1500) return { ok: false, code: 'bad_request' };
+  const clean = rows.map(r => [String(r[0]).slice(0, 40), String(r[1]).slice(0, 5), Number(r[2]) || 0].concat(gws.map((g, k) => Number(r[3 + k]) || 0)));
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    const sh = sheet_('solio');
+    sh.clearContents();
+    const header = TABS.solio.concat(gws.map(g => 'GW' + g));
+    sh.getRange(1, 1, 1, header.length).setValues([header]);
+    sh.getRange(2, 1, clean.length, header.length).setValues(clean);
+    PropertiesService.getScriptProperties().setProperty('SOLIO_META', JSON.stringify({ fetched: String(d.fetched || new Date().toISOString()), gws: gws, n: clean.length }));
+  } finally { lock.releaseLock(); }
+  return { ok: true, saved: clean.length };
+}
+
+function solio_() {
+  const meta = parse_(prop_('SOLIO_META') || 'null');
+  if (!meta) return { fetched: null, gws: [], rows: [] };
+  const sh = sheet_('solio'), n = sh.getLastRow() - 1;
+  const rows = n > 0 ? sh.getRange(2, 1, n, 3 + meta.gws.length).getValues() : [];
+  return { source: 'Solio', url: 'https://fpl.solioanalytics.com', fetched: meta.fetched, gws: meta.gws, rows: rows };
+}
+
+/* ---------- screenshot reading (Gemini) ---------- */
 
 function readShot_(body) {
-  const key = prop_('ANTHROPIC_API_KEY');
+  const key = prop_('GEMINI_API_KEY');
   if (!key) return { ok: false, code: 'not_declared' };
   const images = Array.isArray(body.images) ? body.images.slice(0, 3) : [];
   const prompt = String(body.prompt || '');
@@ -113,30 +140,34 @@ function readShot_(body) {
   if (readsLeft_() <= 0) return { ok: false, code: 'rate_limited' };
   countRead_();
 
-  const content = images.map(im => ({ type: 'image', source: { type: 'base64', media_type: im.type, data: im.data } }));
-  content.push({ type: 'text', text: prompt });
-  const res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
-    method: 'post',
-    contentType: 'application/json',
-    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    muteHttpExceptions: true,
-    payload: JSON.stringify({ model: prop_('MODEL') || DEFAULT_MODEL, max_tokens: 2000, messages: [{ role: 'user', content: content }] })
-  });
-  const status = res.getResponseCode();
-  if (status === 429 || status === 529) return { ok: false, code: 'rate_limited' };
-  if (status === 401 || status === 403) return { ok: false, code: 'bad_key' };
-  if (status >= 400) return { ok: false, code: 'server_error', message: res.getContentText().slice(0, 300) };
-  const data = JSON.parse(res.getContentText());
-  if (data.stop_reason === 'refusal') return { ok: false, code: 'refused' };
-  const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
-  if (!text) return { ok: false, code: 'empty_completion' };
-  const a = text.indexOf('{'), b = text.lastIndexOf('}');
-  if (a < 0 || b <= a) return { ok: false, code: 'invalid_json' };
-  try { return { ok: true, json: JSON.parse(text.slice(a, b + 1)) }; } catch (err) { return { ok: false, code: 'invalid_json' }; }
+  const parts = images.map(im => ({ inline_data: { mime_type: im.type, data: im.data } }));
+  parts.push({ text: prompt });
+  const payload = JSON.stringify({ contents: [{ role: 'user', parts: parts }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } });
+  const models = prop_('GEMINI_MODEL') ? [prop_('GEMINI_MODEL')] : MODELS;
+  let last = { ok: false, code: 'server_error' };
+  for (const model of models) {
+    const res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent', {
+      method: 'post', contentType: 'application/json', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true, payload: payload
+    });
+    const status = res.getResponseCode(), text = res.getContentText();
+    if (status === 404 || status === 429 || status >= 500) { last = { ok: false, code: status === 429 ? 'rate_limited' : 'server_error', message: text.slice(0, 200) }; continue; }
+    if (status === 400 && /API_KEY_INVALID|API key not valid/i.test(text)) return { ok: false, code: 'bad_key' };
+    if (status === 401 || status === 403) return { ok: false, code: 'bad_key' };
+    if (status >= 400) return { ok: false, code: 'server_error', message: text.slice(0, 300) };
+    const data = JSON.parse(text);
+    const cand = (data.candidates || [])[0];
+    if (!cand) return { ok: false, code: (data.promptFeedback && data.promptFeedback.blockReason) ? 'refused' : 'empty_completion' };
+    const answer = ((cand.content && cand.content.parts) || []).map(p => p.text || '').join('').trim();
+    if (!answer) return { ok: false, code: cand.finishReason === 'SAFETY' ? 'refused' : 'empty_completion' };
+    const a = answer.indexOf('{'), b = answer.lastIndexOf('}');
+    if (a < 0 || b <= a) return { ok: false, code: 'invalid_json' };
+    try { return { ok: true, model: model, json: JSON.parse(answer.slice(a, b + 1)) }; } catch (err) { return { ok: false, code: 'invalid_json' }; }
+  }
+  return last;
 }
 
 function readsLeft_() {
-  const limit = Number(prop_('READ_LIMIT') || 60);
+  const limit = Number(prop_('READ_LIMIT') || 100);
   return Math.max(0, limit - Number(prop_(dayKey_()) || 0));
 }
 function countRead_() {
@@ -149,7 +180,6 @@ function dayKey_() { return 'READS_' + Utilities.formatDate(new Date(), 'Asia/Ko
 
 function out(obj) { return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON); }
 function prop_(k) { return PropertiesService.getScriptProperties().getProperty(k); }
-function norm_(s) { return String(s || '').trim().toLowerCase(); }
 function parse_(s) { try { return JSON.parse(s); } catch (e) { return null; } }
 function bump_() { PropertiesService.getScriptProperties().setProperty('REV', String(Number(prop_('REV') || 0) + 1)); }
 
@@ -178,8 +208,8 @@ function upsert_(name, key, row) {
   sh.appendRow(row);
 }
 
-/** Run once from the editor (select "setup" → Run) to create the tabs and check your settings. */
+/** Optional: run once from the editor (choose "setup" → Run) to create the tabs and check the key. */
 function setup() {
   Object.keys(TABS).forEach(sheet_);
-  Logger.log('Club code set: %s · API key set: %s · reads left today: %s', !!prop_('CLUB_CODE'), !!prop_('ANTHROPIC_API_KEY'), readsLeft_());
+  Logger.log('Gemini key set: %s · screenshot reads left today: %s', !!prop_('GEMINI_API_KEY'), readsLeft_());
 }

@@ -1,6 +1,7 @@
 // Pull the club's FPL data from the official FPL API into raw/catalog.json and raw/managers.json.
 // Runs in GitHub Actions (node scripts/sync.mjs); scripts/build.py then merges it into site/data/fpl.json.
 // Member IDs come from raw/club.json plus any IDs added on the site (the backend's "pending" list).
+// Solio projections (sent to the backend by the scheduled Solio reader) are matched to FPL players into raw/xp_solio.json.
 import { readFile, writeFile } from 'node:fs/promises';
 
 const BASE = 'https://fantasy.premierleague.com/api';
@@ -18,12 +19,15 @@ async function j(path, tries = 3) {
   }
 }
 
+async function backendUrl() {
+  try { const cfg = await readFile('site/config.js', 'utf8'); return (cfg.match(/backendUrl:\s*'([^']*)'/) || [])[1] || ''; } catch (e) { return ''; }
+}
+
 async function clubIds() {
   const club = JSON.parse(await readFile('raw/club.json', 'utf8'));
   const ids = club.map(c => c.id);
   try {
-    const cfg = await readFile('site/config.js', 'utf8');
-    const url = (cfg.match(/backendUrl:\s*'([^']*)'/) || [])[1];
+    const url = await backendUrl();
     if (url) {
       const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'action=state');
       const s = await r.json();
@@ -80,5 +84,35 @@ const bad = managers.filter(m => m.err);
 if (bad.length === managers.length) { console.error('Every manager failed to load; keeping the old data.'); process.exit(1); }
 
 await writeFile('raw/catalog.json', JSON.stringify(catalog));
+await solio(b);
 await writeFile('raw/managers.json', JSON.stringify(managers));
 console.log(`GW${cur.id}${cur.finished ? ' (finished)' : ''}, next GW${nxt ? nxt.id : '-'}; ${players.length} players; ${managers.length} managers` + (bad.length ? `; failed: ${bad.map(m => m.id + ':' + m.err).join(', ')}` : ''));
+
+// ---------- Solio: names from the projections table → FPL element ids ----------
+async function solio(b) {
+  const url = await backendUrl();
+  if (!url) return;
+  let d;
+  try { d = await (await fetch(url + (url.includes('?') ? '&' : '?') + 'action=solio')).json(); } catch (e) { console.log('Solio: backend not reachable:', e.message); return; }
+  if (!d.ok || !d.rows || d.rows.length < 100) { console.log('Solio: nothing stored yet'); return; }
+  let prev = null; try { prev = JSON.parse(await readFile('raw/xp_solio.json', 'utf8')); } catch (e) { /* first run */ }
+  if (prev && prev.fetched && d.fetched && prev.fetched >= d.fetched) { console.log('Solio: no newer projections (' + d.fetched + ')'); return; }
+  const fold = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ø/gi, 'o').replace(/ß/g, 'ss').toLowerCase().replace(/[^a-z]/g, '');
+  const team = Object.fromEntries(b.teams.map(t => [t.short_name, t.id]));
+  const els = b.elements.map(p => ({ id: p.id, k: fold(p.web_name), t: p.team, c: p.now_cost / 10 }));
+  const used = new Set(), rows = [];
+  let missed = [];
+  for (const r of d.rows) {
+    const [name, tm, price] = r, k = fold(name), t = team[tm];
+    const pool = els.filter(e => e.t === t && !used.has(e.id));
+    let hit = pool.filter(e => e.k === k);
+    if (hit.length > 1) hit = hit.filter(e => Math.abs(e.c - price) < 0.05);
+    if (hit.length !== 1) { const loose = pool.filter(e => e.k.length > 2 && (e.k.includes(k) || k.includes(e.k))); if (loose.length === 1) hit = loose; }
+    if (hit.length !== 1) { const byPrice = pool.filter(e => Math.abs(e.c - price) < 0.05 && e.k[0] === k[0]); if (byPrice.length === 1) hit = byPrice; }
+    if (hit.length !== 1) { missed.push(name + ' ' + tm); continue; }
+    used.add(hit[0].id);
+    rows.push([hit[0].id, ...d.gws.map((g, i) => Math.round((Number(r[3 + i]) || 0) * 100) / 10)]);
+  }
+  await writeFile('raw/xp_solio.json', JSON.stringify({ source: 'Solio', url: 'https://fpl.solioanalytics.com', fetched: d.fetched, gws: d.gws, rows }));
+  console.log(`Solio: ${rows.length} players for GW${d.gws.join('/')}, read ${d.fetched}` + (missed.length ? `; unmatched ${missed.length}: ${missed.slice(0, 12).join(', ')}` : ''));
+}

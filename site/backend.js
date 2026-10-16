@@ -3,7 +3,8 @@
  * The squad room page was built as a Claude artifact and talks to `window.claude.use(...)` for saving
  * lineups (artifact), votes (db), who is viewing (user) and reading screenshots (sample).
  * On GitHub Pages this file provides the same calls, backed by the club's Google Sheet web app
- * (apps-script/Code.gs). Without a backend URL in config.js the page stays view-only.
+ * (apps-script/Code.gs); anyone with the link can save, vote and upload. Without a backend URL in
+ * config.js the page stays view-only.
  */
 (function () {
   'use strict';
@@ -19,7 +20,7 @@
   const fail = (code, message) => Object.assign(new Error(message || code), { code });
   const nativeFetch = window.fetch.bind(window);
 
-  let info = { codeRequired: true, canRead: false };
+  let info = { canRead: false };
   let seed = null, server = null, lastEdits = null, lastRev = -1;
   const listeners = [];
 
@@ -33,50 +34,15 @@
   }
   async function send(body, opts) {
     opts = opts || {};
-    let code = ls.get('mozf:code') || '';
-    if (info.codeRequired && !code) { code = await askCode(); if (!code) throw fail('cancelled'); }
     let r;
     try {
-      r = await nativeFetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ code }, body)), signal: opts.signal });
+      r = await nativeFetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body), signal: opts.signal });
     } catch (e) { throw fail(e && e.name === 'AbortError' ? 'cancelled' : 'network'); }
     if (!r.ok) throw fail(r.status === 429 ? 'rate_limited' : 'server_error');
     const j = await r.json();
-    if (!j.ok) { if (j.code === 'bad_code') ls.del('mozf:code'); throw fail(j.code || 'server_error', j.message); }
+    if (!j.ok) throw fail(j.code || 'server_error', j.message);
     if (j.rev != null) absorb(j);
     return j;
-  }
-
-  /* ---------- club code prompt ---------- */
-  function askCode() {
-    return new Promise(resolve => {
-      const wrap = document.createElement('div');
-      wrap.className = 'hitask';
-      wrap.innerHTML = `<form class="hitbox" role="dialog" aria-modal="true" aria-labelledby="cc-h">
-        <h3 id="cc-h">Club code</h3>
-        <p>Saving lineups, voting and screenshot reading are for the club. Enter the code from the group chat. You only need it once on this device.</p>
-        <span class="field"><input id="cc-in" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Club code" style="width:100%"></span>
-        <p class="ftsub bad" id="cc-err" hidden>That code didn’t work. Check the group chat and try again.</p>
-        <div class="actions"><button type="button" class="btn" data-cc="cancel">Cancel</button><button type="submit" class="btn primary">Continue</button></div></form>`;
-      document.body.appendChild(wrap);
-      const form = wrap.querySelector('form'), input = wrap.querySelector('#cc-in'), err = wrap.querySelector('#cc-err'), go = form.querySelector('[type=submit]');
-      const done = v => { wrap.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
-      const onKey = ev => { if (ev.key === 'Escape') { ev.stopPropagation(); done(null); } };
-      document.addEventListener('keydown', onKey, true);
-      wrap.querySelector('[data-cc=cancel]').addEventListener('click', () => done(null));
-      form.addEventListener('submit', async ev => {
-        ev.preventDefault();
-        const code = input.value.trim(); if (!code) { input.focus(); return; }
-        go.disabled = true; go.textContent = 'Checking…'; err.hidden = true;
-        try {
-          const r = await nativeFetch(API, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: 'check', code }) });
-          const j = await r.json();
-          if (j.ok) { ls.set('mozf:code', code); info.canRead = !!j.canRead; done(code); return; }
-          err.textContent = j.code === 'bad_code' ? 'That code didn’t work. Check the group chat and try again.' : 'Couldn’t check the code just now. Try again.';
-        } catch (e) { err.textContent = 'Couldn’t reach the club backend. Check your connection and try again.'; }
-        err.hidden = false; go.disabled = false; go.textContent = 'Continue'; input.select();
-      });
-      setTimeout(() => input.focus(), 30);
-    });
   }
 
   /* ---------- lineups & member list (the page's data/edits.json) ---------- */

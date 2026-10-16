@@ -11,12 +11,11 @@ squads, head-to-heads and ownership.
 |---|---|---|
 | Page | `site/index.html` (+ `site/backend.js`, `site/config.js`) | when this repo changes |
 | FPL data (squads, points, fixtures, prices) | `site/data/fpl.json`, built by `scripts/sync.mjs` + `scripts/build.py` | automatically every 3 hours (GitHub Actions), or *Actions → Sync FPL data and publish → Run workflow* |
-| Expected points | `raw/xp_solio.json` (Solio), `raw/xp.json` (FPL Copilot) | on request; FPL's own estimate fills in when a file is out of date |
+| Solio expected points | a scheduled Claude task reads Solio's Projections table in Sahil's signed-in browser (`tools/solio-reader.js`) and sends it to the Sheet; the sync matches it to FPL players into `raw/xp_solio.json` | every 3 hours while that computer is on; FPL's own estimate fills in for any gameweek Solio doesn't cover |
 | Saved lineups, member-list changes, votes | the club Google Sheet (`apps-script/Code.gs`, deployed as a web app) | live |
-| Screenshot reading | the same web app, calling Claude with the API key stored in the Sheet's script properties | live, capped per day |
+| Screenshot reading | the same web app, calling Google's Gemini API (free tier) with the key stored in the Sheet's script properties | live, capped per day |
 
-Anyone with the link can view. Saving a lineup, voting, uploading a screenshot or changing the member
-list asks once per device for the club code (the `CLUB_CODE` script property in the Sheet).
+Anyone with the link can view, save lineups, vote, upload screenshots and change the member list.
 
 ## Members
 
@@ -25,6 +24,6 @@ list asks once per device for the club code (the `CLUB_CODE` script property in 
 
 ## Changing the backend
 
-Put the web app URL (ends in `/exec`) in `site/config.js`. To change the club code, the API key or the daily
-screenshot limit (`READ_LIMIT`, default 60), edit the script properties in the Sheet's Apps Script project — no
-redeploy needed. After editing `Code.gs`, use *Deploy → Manage deployments → Edit → New version* so the URL stays the same.
+Put the web app URL (ends in `/exec`) in `site/config.js`. To change the Gemini key (`GEMINI_API_KEY`), the model
+(`GEMINI_MODEL`) or the daily screenshot limit (`READ_LIMIT`, default 100), edit the script properties in the Sheet's
+Apps Script project — no redeploy needed. After editing `Code.gs`, use *Deploy → Manage deployments → Edit → New version* so the URL stays the same.
